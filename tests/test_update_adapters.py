@@ -24,11 +24,11 @@ DOC_UPDATED = '<!--SET\nname: "mdship"\n-->\n\n<!--$name-->mdship\n'
 def reset_state(monkeypatch):
     # Keep the tests from touching a real .mdship/.lastfiles up the tree.
     monkeypatch.setattr(cli, "_find_mdship_dir", lambda: None)
-    cli.state.no_bak = False
+    cli.state.backup = None
     cli.state.track = False
     cli.state.dry_run = False
     yield
-    cli.state.no_bak = False
+    cli.state.backup = None
     cli.state.track = False
     cli.state.dry_run = False
 
@@ -74,7 +74,23 @@ class TestCliAdapter:
         runner.invoke(cli.app, ["update", str(file)])
 
         assert spy[0]["force"] is False
+        assert spy[0]["options"] == WriteOptions(backup=None, dry_run=False, track=False)
+
+    def test_bak_option_forces_a_backup(self, tmp_path, spy):
+        file = doc(tmp_path)
+
+        runner.invoke(cli.app, ["--bak", "update", str(file)])
+
         assert spy[0]["options"] == WriteOptions(backup=True, dry_run=False, track=False)
+
+    def test_bak_and_no_bak_together_are_rejected(self, tmp_path, spy):
+        file = doc(tmp_path)
+
+        result = runner.invoke(cli.app, ["--bak", "--no-bak", "update", str(file)])
+
+        assert result.exit_code == 2
+        assert "cannot be used together" in result.output
+        assert spy == []
 
     def test_dry_run_option(self, tmp_path, spy):
         file = doc(tmp_path)
@@ -150,6 +166,26 @@ class TestCliAdapter:
         assert "-old" in result.output
         assert "+new" in result.output
 
+    def test_messages_are_not_hard_wrapped(self, tmp_path, monkeypatch):
+        # Rich wraps at 80 columns when stderr is not a terminal (CI logs, pipes);
+        # inserted newlines would split paths and diff lines.
+        long_dir = tmp_path / ("very-long-directory-name-" * 6)
+        long_dir.mkdir()
+        file = doc(long_dir)
+        monkeypatch.setattr(
+            operations,
+            "update_file",
+            lambda path, **kw: OperationResult(
+                path=path, changed=True, written=False, before="old\n", after="new\n"
+            ),
+        )
+
+        result = runner.invoke(cli.app, ["--dry-run", "update", str(file)])
+
+        lines = result.output.splitlines()
+        assert f"~ {file}: would change" in lines
+        assert f"--- a/{file}" in lines
+
     def test_artifacts_are_rendered_when_document_written(self, tmp_path, monkeypatch):
         file = doc(tmp_path)
         monkeypatch.setattr(
@@ -207,7 +243,7 @@ class TestMcpAdapter:
         mcp_server.update(str(file))
 
         assert spy[0]["force"] is False
-        assert spy[0]["options"] == WriteOptions(backup=True, dry_run=False, track=False)
+        assert spy[0]["options"] == WriteOptions(backup=None, dry_run=False, track=False)
 
     def test_result_serialization(self, tmp_path):
         path = tmp_path / "a.md"
@@ -282,7 +318,7 @@ class TestParity:
         assert "mdship" in cli_file.read_text()
 
     def test_neither_adapter_runs_its_own_pipeline(self, tmp_path, monkeypatch):
-        """Both must go through update_file, not markdown.py directly."""
+        """Both must go through update_file, not mdship.markdown directly."""
         calls = []
 
         def fake_update_file(path, *, force=False, options=WriteOptions()):
@@ -294,7 +330,7 @@ class TestParity:
         import mdship.markdown as md
 
         def forbidden(*args, **kwargs):
-            raise AssertionError("adapter called markdown.py directly")
+            raise AssertionError("adapter called mdship.markdown directly")
 
         for name in (
             "collect_set_variables",

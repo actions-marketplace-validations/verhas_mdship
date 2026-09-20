@@ -129,7 +129,9 @@ app = typer.Typer(
     help=f"mdship — markdown manipulation tool (version {_VERSION})",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-err = Console(stderr=True)
+# soft_wrap: never insert line breaks. Rich otherwise wraps at 80 columns when
+# stderr is not a terminal, splitting paths and diff lines in CI logs and pipes.
+err = Console(stderr=True, soft_wrap=True)
 
 
 def _version_callback(value: bool) -> None:
@@ -139,7 +141,7 @@ def _version_callback(value: bool) -> None:
 
 
 class State:
-    no_bak: bool = False
+    backup: bool | None = None  # None: back up unless git holds the file's content
     track: bool = False
     dry_run: bool = False
 
@@ -153,11 +155,15 @@ def _main(
         bool | None,
         typer.Option("--version", "-V", callback=_version_callback, is_eager=True, help="Show version and exit."),
     ] = None,
-    no_bak: Annotated[bool, typer.Option("--no-bak", help="Do not create backup files")] = False,
+    no_bak: Annotated[bool, typer.Option("--no-bak", help="Never create .bak backups")] = False,
+    bak: Annotated[bool, typer.Option("--bak", help="Always create .bak backup files. Default: back up unless the file is tracked by git and unchanged")] = False,
     track: Annotated[bool, typer.Option("--track", "-t", help="Track changes in front-matter (last-updated and mdship-log)")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would change without modifying any files")] = False,
 ) -> None:
-    state.no_bak = no_bak
+    if bak and no_bak:
+        err.print("[red]Error:[/red] --bak and --no-bak cannot be used together")
+        raise typer.Exit(2)
+    state.backup = True if bak else False if no_bak else None
     state.track = track
     state.dry_run = dry_run
 
@@ -200,7 +206,9 @@ def _write_file(file: Path, content: str, operation: str = "") -> bool:
         _print_diff(file, original_content, content)
         return False
 
-    if not state.no_bak:
+    from mdship.operations import needs_backup
+
+    if needs_backup(file, state.backup):
         backup_path = file.with_suffix(file.suffix + ".bak")
         backup_path.write_text(original_content)
 
@@ -213,7 +221,7 @@ def _write_options() -> "WriteOptions":
     from mdship import operations
 
     return operations.WriteOptions(
-        backup=not state.no_bak, dry_run=state.dry_run, track=state.track
+        backup=state.backup, dry_run=state.dry_run, track=state.track
     )
 
 
@@ -236,9 +244,9 @@ def _render_error(file: Path, error: Exception) -> None:
     from mdship.errors import FileOperationError
 
     if isinstance(error, FileOperationError):
-        err.print(f"[red]Error:[/red] {error}")
+        err.print(f"[red]Error:[/red] {escape(str(error))}")
     else:
-        err.print(f"[red]Error:[/red] {file}: {error}")
+        err.print(f"[red]Error:[/red] {file}: {escape(str(error))}")
 
 
 def _parse_line_range(lines: str) -> tuple[int | None, int | None]:
@@ -340,7 +348,7 @@ def shift_headings(
         try:
             start_line, end_line = _parse_line_range(lines)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] invalid line range: {e}")
+            err.print(f"[red]Error:[/red] invalid line range: {escape(str(e))}")
             raise typer.Exit(1)
 
     errors = []
@@ -353,7 +361,7 @@ def shift_headings(
         try:
             shifted_content = shift_heading_levels(content, levels, start_line=start_line, end_line=end_line)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, shifted_content, f"shift-headings: shifted headings by {levels} level(s)"):
@@ -361,8 +369,8 @@ def shift_headings(
     _exit_if_errors(errors)
 
 
-@app.command()
-def sum(
+@app.command("sum")
+def sum_cmd(
     files: Annotated[list[Path], typer.Argument(help="Markdown file(s) to process")] = [],
     algorithm: Annotated[str, typer.Option("--algorithm", "-a", help="Hash algorithm (md5, sha256, sha1)")] = "sha256",
 ) -> None:
@@ -406,7 +414,7 @@ def frontmatter_get(
         try:
             value = get_front_matter_value(content, key)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if isinstance(value, (dict, list)):
@@ -434,7 +442,7 @@ def frontmatter_set(
     try:
         parsed_value = yaml.safe_load(value)
     except yaml.YAMLError as e:
-        err.print(f"[red]Error:[/red] invalid --value: {e}")
+        err.print(f"[red]Error:[/red] invalid --value: {escape(str(e))}")
         raise typer.Exit(1)
 
     errors = []
@@ -447,7 +455,7 @@ def frontmatter_set(
         try:
             updated_content = set_front_matter_value(content, key, parsed_value)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, updated_content, f"frontmatter-set: set '{key}'"):
@@ -477,7 +485,7 @@ def verify(
         if is_valid:
             print(f"OK: {file}")
         else:
-            err.print(f"[red]Error:[/red] {file}: {message}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(message))}")
             errors.append((file, message))
     _exit_if_errors(errors)
 
@@ -547,7 +555,7 @@ def semantic_line_breaks(
         try:
             start_line, end_line = _parse_line_range(lines)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] invalid line range: {e}")
+            err.print(f"[red]Error:[/red] invalid line range: {escape(str(e))}")
             raise typer.Exit(1)
 
     errors = []
@@ -582,7 +590,7 @@ def number(
         try:
             start_line, end_line = _parse_line_range(lines)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] invalid line range: {e}")
+            err.print(f"[red]Error:[/red] invalid line range: {escape(str(e))}")
             raise typer.Exit(1)
 
     errors = []
@@ -619,7 +627,7 @@ def number(
                 content, style=style, start_line=start_line, end_line=end_line, skip_title=skip_title
             )
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
 
@@ -643,7 +651,7 @@ def unnumber(
         try:
             start_line, end_line = _parse_line_range(lines)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] invalid line range: {e}")
+            err.print(f"[red]Error:[/red] invalid line range: {escape(str(e))}")
             raise typer.Exit(1)
 
     errors = []
@@ -717,7 +725,7 @@ def get_section(
         try:
             section = get_section_fn(content, heading, occurrence=occurrence)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         print(section)
@@ -753,7 +761,7 @@ def replace_section(
         try:
             updated_content = replace_section_fn(content, heading, new_content, occurrence=occurrence)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, updated_content, f"replace-section: replaced section '{heading}'"):
@@ -790,7 +798,7 @@ def get_lines(
         try:
             result = get_lines_fn(content, start_line, end_line)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         print(result)
@@ -826,7 +834,7 @@ def insert_lines(
         try:
             updated_content = insert_lines_fn(content, after_line, new_content)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, updated_content, f"insert-lines: inserted after line {after_line}"):
@@ -859,7 +867,7 @@ def delete_lines(
         try:
             updated_content = delete_lines_fn(content, start_line, end_line)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, updated_content, f"delete-lines: deleted lines {start_line}:{end_line}"):
@@ -898,7 +906,7 @@ def get_paragraphs(
         try:
             result = get_paragraphs_fn(content, start_line, end_line)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         print(result)
@@ -927,7 +935,7 @@ def find_replace(
         try:
             start_line, end_line = _parse_line_range(lines)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] invalid line range: {e}")
+            err.print(f"[red]Error:[/red] invalid line range: {escape(str(e))}")
             raise typer.Exit(1)
 
     errors = []
@@ -943,7 +951,7 @@ def find_replace(
                 start_line=start_line, end_line=end_line, count=count, flags=flags,
             )
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, updated_content, f"find-replace: replaced matches of /{pattern}/"):
@@ -976,7 +984,7 @@ def extract_table(
         try:
             table = extract_table_fn(content, index=index, line=line)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         print(json.dumps(table))
@@ -999,7 +1007,7 @@ def update_table(
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as e:
-        err.print(f"[red]Error:[/red] invalid JSON: {e}")
+        err.print(f"[red]Error:[/red] invalid JSON: {escape(str(e))}")
         raise typer.Exit(1)
     if not isinstance(payload, dict) or "header" not in payload or "rows" not in payload:
         err.print('[red]Error:[/red] JSON must be an object with "header" and "rows" keys')
@@ -1017,7 +1025,7 @@ def update_table(
         try:
             updated_content = update_table_fn(content, payload["header"], payload["rows"], index=index, line=line)
         except ValueError as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
         if _write_file(file, updated_content, "update-table: replaced table"):
@@ -1069,7 +1077,7 @@ def update(
     3. Variable references (replace $variable in document and included content)
        - Works in regular text, not in code blocks (between ```)
        - Included content variables are replaced here
-    4. <!--TEMPLATE--> and <!--JINJA2--> placeholders (render templates, insert content)
+    4. <!--JINJA2--> and deprecated <!--TEMPLATE--> placeholders (render templates, insert content)
        - Useful for code blocks and formatted content with variables
     5. <!--TOC--> placeholders (generate table of contents)
        - Can include headings from both original and included content
@@ -1116,14 +1124,6 @@ def update(
         range: "10..20"
         -->
 
-        <!--TEMPLATE
-        content: |
-          ```python
-          # Using $pattern variable
-          patterns = $pattern
-          ```
-        -->
-
         <!--JINJA2
         content: |
           {% for author in authors %}
@@ -1150,7 +1150,7 @@ def update(
     for file in _resolve_files(files):
         try:
             result = operations.update_file(file, force=force, options=_write_options())
-        # Plain ValueError is still raised by not-yet-typed markdown.py phases;
+        # Plain ValueError is still raised by not-yet-typed mdship.markdown phases;
         # later phases narrow those to MdshipError subclasses.
         except (MdshipError, ValueError) as e:
             _render_error(file, e)
@@ -1181,7 +1181,7 @@ def ai_list(
     needed to regenerate one.
 
     status is one of: never_generated, edited, needs_update, may_need_update,
-    up_to_date. See list_ai_placeholders in markdown.py for what each means.
+    up_to_date. See list_ai_placeholders in mdship.markdown for what each means.
     """
     if state.track:
         err.print(f"[red]Error:[/red] --track option is not supported for read-only commands")
@@ -1241,7 +1241,7 @@ def ai_fix(
     Computes the character count and MD5 hash of the content between each
     <!--AI ... --> and <!--/AI--> marker pair and writes _content_generated_
     into the opening marker, exactly as mdship does for TOC, INCLUDE, MERMAID
-    and TEMPLATE placeholders.
+    and JINJA2 placeholders.
 
     Run this after writing or updating an AI placeholder section so that
     subsequent ai-check calls can detect unintended manual edits.
@@ -1259,7 +1259,7 @@ def ai_fix(
         try:
             new_content, count = ai_fix_placeholders(content, name=name, markdown_dir=str(file.parent))
         except Exception as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
 
@@ -1297,7 +1297,7 @@ def ai_check(
         try:
             issues = ai_check_placeholders(content, name=name, markdown_dir=str(file.parent))
         except Exception as e:
-            err.print(f"[red]Error:[/red] {file}: {e}")
+            err.print(f"[red]Error:[/red] {file}: {escape(str(e))}")
             errors.append((file, str(e)))
             continue
 

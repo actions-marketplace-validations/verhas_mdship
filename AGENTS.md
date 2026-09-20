@@ -29,8 +29,31 @@ mdship/
 │   ├── errors.py              # Typed mdship exceptions
 │   ├── scripting.py           # User scripts: trust gate, loading, ctx, hooks
 │   ├── factory_scripts/       # Bundled scripts installable into a project
-│   ├── markdown.py            # Core markdown manipulation functions
+│   ├── markdown/              # Core markdown manipulation (package; __init__ re-exports the public API)
+│   │   ├── managed.py         # Managed regions: placeholder parsing, content-hash integrity
+│   │   ├── ai.py              # AI placeholders (dependency tracking) and //AI: comments
+│   │   ├── variables.py       # SET / PYTHON define: collection, variable references
+│   │   ├── variable_sources.py # IMPORT, SLURP, SIP, SUP
+│   │   ├── values.py          # Nested variable lookup, assignment, merge, substitution
+│   │   ├── includes.py        # INCLUDE
+│   │   ├── templates.py       # JINJA2 and deprecated TEMPLATE
+│   │   ├── python_scripts.py  # PYTHON run:
+│   │   ├── mermaid.py         # MERMAID
+│   │   ├── toc.py             # TOC generation and heading anchors
+│   │   ├── headings.py        # fix / shift / number / unnumber headings
+│   │   ├── editing.py         # Sections, line ranges, paragraphs, find/replace
+│   │   ├── tables.py          # GFM tables
+│   │   ├── reflow.py          # Reflow and semantic line breaks
+│   │   ├── frontmatter.py     # Front-matter access, checksums, update tracking
+│   │   ├── links.py           # Link and anchor validation
+│   │   ├── extract.py         # Slicing source files (INCLUDE and AI deps)
+│   │   ├── hooks.py           # Placeholder ↔ user script glue
+│   │   ├── codeblocks.py      # Fenced code block detection
+│   │   └── _optional.py       # Optional imports bound to None when missing
 │   └── mcp_server.py          # MCP server implementation
+│
+├── site/                      # GitHub Pages website: build.py renders README.md + documentation/
+│                              #   (templates/, static/); published by .github/workflows/pages.yml
 │
 └── tests/                     # Test suite
     ├── __init__.py
@@ -168,6 +191,9 @@ Collects variables from all variable source placeholders in a document: SET, IMP
    from: "settings.json"
    -->
    ```
+   XML is wrapped in its root element name. Namespaces are stripped from element and
+   attribute names unless listed in an optional `xmlns: {name: URL}` mapping, which
+   imports them as `name_local`; two different names that would collide are an error.
 
 3. **SLURP**: Extract variable names and values from files using regex (2 groups)
    ```
@@ -244,7 +270,7 @@ The order is defined in exactly one place: `update_document()` in `operations.py
    - Variables are NOT replaced inside code blocks (between ``` markers)
    - Safe for including code with `$var` notation
 
-4. **TEMPLATE and JINJA2 placeholders** - Render inline templates with the collected variables
+4. **JINJA2 and TEMPLATE placeholders** - Render inline templates with the collected variables (TEMPLATE is deprecated in favor of JINJA2)
 
 5. **PYTHON `run:` placeholders** - Generate content with a project-local Python script
    - Before the TOC so generated headings are indexed
@@ -298,8 +324,8 @@ Commands are dispatched via `typer.Typer` in `cli.py`. Each command:
 
 - Takes a markdown file as an argument
 - Overwrites the file with the modified content
-- Creates a backup file with `.md.bak` extension by default
-- Uses the global `--no-bak` option to skip backup creation
+- Creates a `.md.bak` backup unless git already holds the file's content (tracked, nothing modified or staged); the decision is `operations.needs_backup()`
+- Uses the global `--no-bak` option to never back up, and `--bak` to always back up
 
 ```bash
 mdship fix-headings file.md
@@ -327,7 +353,7 @@ mdship --no-bak number file.md --style period
 mdship --no-bak update file.md
 ```
 
-The `--no-bak` flag is a global option that works with any modifying command.
+The `--no-bak` and `--bak` flags are global options that work with any modifying command.
 
 The `verify` command is special—it prints "OK" on success and an error message on failure, with appropriate exit codes for use in shell scripts.
 
@@ -362,14 +388,17 @@ Configure in Codex's MCP settings:
 
 ```text
 CLI ──┐
-      ├──> operations.py ──> markdown.py
+      ├──> operations.py ──> markdown/
 MCP ──┘
 ```
 
-- `markdown.py` transforms content and raises typed errors from `errors.py`.
+- `markdown/` transforms content and raises typed errors from `errors.py`. Import
+  public functions from `mdship.markdown`; each lives in one feature submodule.
+  To monkeypatch a helper in tests, patch the submodule that *calls* it (e.g.
+  `mdship.markdown.mermaid._check_content_hash`), not the package.
 - `operations.py` is the application layer: it validates paths, reads a document
   once, runs the workflow, applies tracking, compares, backs up and writes, and
-  returns an `OperationResult`. It must not import Typer, Rich or FastMCP.
+  returns an `OperationResult`. It must not import Typer, Rich or the MCP SDK.
 - `cli.py` and `mcp_server.py` are adapters: they convert their own options into
   `WriteOptions`, call a named operation, and render or serialize the result.
 - `update_document()` in `operations.py` is the single definition of the
@@ -380,7 +409,7 @@ MCP ──┘
   script resolution and loading, the `ctx` object, the hook runners, and factory
   script provenance. It never writes the allow-list and never changes permissions.
 - Migration status: `update` is migrated (see `REFACTOR-2026-07-30.md`, phases 1
-  and 2). The other commands still call `markdown.py` directly from the adapters.
+  and 2). The other commands still call `mdship.markdown` directly from the adapters.
 
 ### Notes
 
