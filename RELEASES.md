@@ -36,10 +36,61 @@ prompt: |
       This prevents mdship, browsers, and other Markdown renderers from treating
       the sequence as a real comment delimiter, while remaining invisible in rendered output.
 _prompt_checksum_: md5:c16bb14c6ee90971af165751b8f2c043
-_content_generated_: 19175:md5:4624fd84b3cb273ef49d5356f419c099
+_content_generated_: 23092:md5:75203a23c7f9a02a7d7836100289df78
 # ⚠️ MANAGED CONTENT: Edits will be lost.
 # danger zone: Delete _content_generated_ to override.
 -->
+
+## 1.4.0 — 2026-10-01
+
+### Heading Numbering from Front-Matter
+
+A `number:` key in a document's YAML front-matter makes `mdship update` number the headings on every run, before any placeholder is processed. The table of contents is built from the numbered headings, and keeping a document numbered no longer depends on remembering to run `mdship number`.
+
+```yaml
+---
+number: true
+---
+```
+
+`number: true` numbers in the period style and `number: false` removes the numbering. Without the key, headings are left exactly as they are, so `false` and a missing key are not the same. A mapping chooses the options:
+
+```yaml
+---
+number:
+  style: parenthesis    # period (default), space, or parenthesis
+  skip-title: true      # leave a single h1 title unnumbered (default false)
+---
+```
+
+Any other value, an unknown option, or an invalid style is an error that stops the update.
+
+### Numbering Headings in Generated Content
+
+Headings a placeholder generates — from `<!​--INCLUDE-​->`, `<!​--JINJA2-​->`, a PYTHON `run:` script, or an AI placeholder — are protected by the content checksum like the rest of the generated content. If numbering would change one of them, `mdship update` stops with an error and writes nothing. Two more options under `number:` handle such documents:
+
+- `generated: true` lets numbering rewrite those headings and recalculates the checksum: the change is reproducible and made by mdship, not by a person. Content that was already edited by hand is still refused.
+- `post-process: true` numbers the headings once more after the update, so headings generated during that same run get their numbers too, and then regenerates the TOC. Variables and scripts that read heading text see the numbering from before this final step.
+
+### New Command: `STRIP`
+
+`mdship STRIP file.md` converts a document from mdship-managed to manually managed. It removes every placeholder opening marker with its YAML configuration, every closing tag (custom `_terminate_` names included) and every variable-reference comment, and keeps the hand-written text, the generated content and the variable values byte for byte: `Version <!​--$version-​->1.2.0` becomes `Version 1.2.0`. Fenced code, inline code spans and ordinary HTML comments are untouched, and a line left holding only removed markers is deleted.
+
+The conversion is one-way. The command name is upper case so it is not typed by accident, it always writes a `.bak` backup (even when git already holds the file), and it refuses to run under `--no-bak`. It is available on the command line only: there is deliberately no MCP tool, because discarding a document's placeholder configuration is a decision for a person, not for an agent.
+
+---
+
+## 1.3.1 — 2026-10-01
+
+### Bug Fix: `format-tables` Leaves Managed Content Alone
+
+`mdship format-tables` (`ft`) re-padded every pipe table in the document, including ones it has no business touching. A table inside generated content — between a placeholder's opening marker and its closing tag — changed length and hash, so the next `mdship update` stopped with "document integrity compromised". A table inside placeholder configuration, such as a `JINJA2` template, lost its YAML indentation and broke the template. Tables in HTML comments, placeholder configuration, and generated content (`<!​--INCLUDE-​->`, `<!​--TOC-​->`, `<!​--AI-​->` and the rest, custom `_terminate_` tags included) are now left byte for byte unchanged; every other table is formatted as before.
+
+### Bug Fix: AI Content Starts on Its Own Line
+
+`ai_update` wrote the generated text exactly as the agent sent it, so text without surrounding newlines was glued to both markers: `-​->Generated text<!​--/AI-​->`. The content now always starts on the line after the opening `-​->`, and the closing `<!​--/AI-​->` tag sits on its own line, as with every other managed placeholder. Content that already has those newlines is stored unchanged.
+
+---
 
 ## 1.3.0 — 2026-09-16
 

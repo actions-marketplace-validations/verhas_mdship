@@ -33,7 +33,10 @@ from mdship.markdown.frontmatter import (
 )
 from mdship.markdown.headings import (
     add_heading_numbers,
+    NumberingConfig,
     fix_heading_levels,
+    number_from_front_matter,
+    read_numbering_config,
     remove_heading_numbers,
     shift_heading_levels,
 )
@@ -51,6 +54,9 @@ from mdship.markdown.python_scripts import (
 )
 from mdship.markdown.reflow import (
     reflow_paragraphs,
+)
+from mdship.markdown.strip import (
+    strip_placeholders,
 )
 from mdship.markdown.tables import (
     extract_table,
@@ -94,6 +100,9 @@ __all__ = [
     "list_ai_comments",
     "list_ai_placeholders",
     "list_headings",
+    "number_from_front_matter",
+    "NumberingConfig",
+    "read_numbering_config",
     "process_jinja2",
     "process_python",
     "process_template",
@@ -103,6 +112,7 @@ __all__ = [
     "replace_variables_in_document",
     "set_front_matter_value",
     "shift_heading_levels",
+    "strip_placeholders",
     "update_includes",
     "update_mermaid",
     "update_table",

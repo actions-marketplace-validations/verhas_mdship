@@ -48,6 +48,7 @@ mdship/
 │   │   ├── links.py           # Link and anchor validation
 │   │   ├── extract.py         # Slicing source files (INCLUDE and AI deps)
 │   │   ├── hooks.py           # Placeholder ↔ user script glue
+│   │   ├── strip.py           # STRIP: remove all placeholder comments, keep content
 │   │   ├── codeblocks.py      # Fenced code block detection
 │   │   └── _optional.py       # Optional imports bound to None when missing
 │   └── mcp_server.py          # MCP server implementation
@@ -60,7 +61,8 @@ mdship/
     ├── test_markdown.py       # Unit tests for markdown functions
     ├── test_operations.py     # Unit tests for the application layer
     ├── test_update_adapters.py # CLI/MCP adapter and parity tests
-    └── test_scripting.py      # Trust gate, PYTHON placeholder, hooks, factory scripts
+    ├── test_scripting.py      # Trust gate, PYTHON placeholder, hooks, factory scripts
+    └── test_strip.py          # STRIP: placeholder removal and its CLI rules
 ```
 
 ---
@@ -376,6 +378,14 @@ Lists every `//AI:` inline review-comment line as `{line, text}` dicts, in docum
 
 **Status**: Full implementation
 
+### `strip_placeholders(content: str) -> str`
+
+Removes every mdship placeholder comment — opening markers with their YAML, closing tags (custom `_terminate_` names included), and variable-reference comments — while keeping manual text, generated content, and variable values byte for byte. A line left holding only removed markers is deleted. Fenced code blocks, inline code spans, and ordinary HTML comments are untouched.
+
+Backs the `mdship STRIP` command: a one-way conversion from mdship-managed to manually managed. **CLI only, deliberately not an MCP tool.** The command always writes a `.bak` backup (even when git holds the file) and exits with an error under `--no-bak`.
+
+**Status**: Full implementation
+
 ### `process_python(content: str, markdown_dir: str, variables: Optional[dict], force: bool, file_path: Optional[str]) -> str`
 
 Runs `<!--PYTHON run: ...-->` placeholders: calls the script's `run(content, ctx)`
@@ -392,6 +402,13 @@ the manual-edit integrity check.
 The `mdship update` command processes placeholders in a specific order to ensure variables are available when needed:
 
 The order is defined in exactly one place: `update_document()` in `operations.py`.
+
+0. **Front-matter heading numbering** (`number_from_front_matter`) - before any placeholder
+   - `number: true` numbers (period style), `number: false` removes numbering
+   - `number: {style: period|space|parenthesis, skip-title: bool, generated: bool, post-process: bool}` numbers with options (defaults: period, false, false, false)
+   - No `number:` key: headings are left as they are
+   - A numbering change inside a guarded (`_content_generated_`) region is an `IntegrityError` unless `generated: true`, which recalculates that region's checksum
+   - `post-process: true`: renumber after phase 7; if that changed the document, regenerate only the TOC
 
 1. **Variable source placeholders** (collected in order they appear) - Define variables for use in subsequent placeholders
    - SET: Define inline with YAML values
@@ -498,6 +515,7 @@ mdship toc file.md --min-level 2                           # Start from h2
 mdship update file.md                                      # Update all placeholders (SET, IMPORT, SLURP, SIP, SUP, INCLUDE, TOC, MERMAID)
 mdship ai-list file.md                                     # List every AI placeholder's name, line, status (JSON)
 mdship ai-comments file.md                                 # List every //AI: review-comment line (JSON)
+mdship STRIP file.md                                       # Remove all placeholder comments, keep the content (always backs up; CLI only)
 mdship mcp                                                 # Start MCP server on stdio
 
 # With --no-bak flag (prevents backup creation)
@@ -539,7 +557,7 @@ The alias itself works exactly like the full name:
 | `fs` | `frontmatter-set` |
 | `ac` | `ai-comments` |
 
-`sum`, `verify`, `validate`, `reflow`, `number`, `unnumber`, `toc`, `update`, `init`, `mcp`, `ai-list`, `ai-fix`, and `ai-check` are already short and have no alias. These are CLI-only; MCP tool names are unaffected (an agent calling the MCP server always uses the full tool name, e.g. `semantic_line_breaks`).
+`STRIP`, `sum`, `verify`, `validate`, `reflow`, `number`, `unnumber`, `toc`, `update`, `init`, `mcp`, `ai-list`, `ai-fix`, and `ai-check` are already short and have no alias. These are CLI-only; MCP tool names are unaffected (an agent calling the MCP server always uses the full tool name, e.g. `semantic_line_breaks`).
 
 ---
 
